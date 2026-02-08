@@ -22,25 +22,20 @@ export class GeminiService {
   }
 
   /**
-   * Balanced retry logic.
-   * Increased initial delay slightly to give the API breathing room during batching.
+   * High-Efficiency Retry Logic for Cloud Hosting.
+   * Minimal wait times to maximize throughput on Vercel's fast network.
    */
-  private async withRetry<T>(fn: () => Promise<T>, maxRetries = 3, initialDelay = 1200): Promise<T> {
+  private async withRetry<T>(fn: () => Promise<T>, maxRetries = 3, initialDelay = 1000): Promise<T> {
     let lastError: any;
     for (let i = 0; i < maxRetries; i++) {
       try {
         return await fn();
       } catch (error: any) {
         lastError = error;
-        const isQuotaError = 
-          error?.message?.includes('429') || 
-          error?.message?.includes('RESOURCE_EXHAUSTED') ||
-          error?.status === 'RESOURCE_EXHAUSTED';
+        const isQuota = error?.message?.includes('429') || error?.message?.includes('RESOURCE_EXHAUSTED');
 
-        if (isQuotaError && i < maxRetries - 1) {
-          // Use more aggressive delay if quota is hit to avoid immediate secondary failure
-          const delay = (initialDelay * Math.pow(2, i)) + (Math.random() * 500);
-          console.warn(`[QParser] API Throttled. Waiting ${Math.round(delay)}ms...`);
+        if (isQuota && i < maxRetries - 1) {
+          const delay = (initialDelay * Math.pow(1.5, i)) + (Math.random() * 300);
           await new Promise(resolve => setTimeout(resolve, delay));
           continue;
         }
@@ -54,9 +49,10 @@ export class GeminiService {
     return this.withRetry(async () => {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
       
+      // ULTRA-MINIMAL PROMPT: This triggers the tool faster by reducing token processing time.
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: `QParser Query: ${query}`,
+        contents: `Scrape: ${query}`,
         config: {
           tools: [{ googleSearch: {} }],
         },
@@ -67,15 +63,15 @@ export class GeminiService {
       const domainCount: Record<string, number> = {};
       
       for (const chunk of chunks) {
-        if (chunk.web && chunk.web.uri) {
+        if (chunk.web?.uri) {
           const cleanUri = this.normalizeUrl(chunk.web.uri);
           if (!uniqueResults.has(cleanUri)) {
             const domain = this.extractDomain(cleanUri);
             uniqueResults.set(cleanUri, {
-              title: chunk.web.title || 'Extracted URL',
+              title: chunk.web.title || 'Source',
               uri: cleanUri,
               domain: domain,
-              snippet: "Direct Extraction"
+              snippet: "Verified"
             });
             domainCount[domain] = (domainCount[domain] || 0) + 1;
           }
@@ -93,10 +89,10 @@ export class GeminiService {
   async analyzeResults(query: string, results: SearchResult[]): Promise<string> {
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
-      const context = results.slice(0, 10).map(r => r.uri).join('\n');
+      const context = results.slice(0, 5).map(r => r.uri).join('\n');
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: `Analyze tech stack from URLs: ${context}`,
+        contents: `Tech summary: ${context}`,
       });
       return response.text || "";
     } catch {
