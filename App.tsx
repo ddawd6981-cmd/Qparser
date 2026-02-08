@@ -8,8 +8,8 @@ import ResultsDisplay from './components/ResultsDisplay';
 import Header from './components/Header';
 import Console from './components/Console';
 
-// Optimized concurrency for balanced performance on Vercel
-const CONCURRENCY_LIMIT = 4; 
+// Turbo concurrency: 5 parallel streams for maximum throughput
+const CONCURRENCY_LIMIT = 5; 
 
 const App: React.FC = () => {
   const [sessions, setSessions] = useState<SearchSession[]>([]);
@@ -23,8 +23,12 @@ const App: React.FC = () => {
   useEffect(() => {
     const checkKey = async () => {
       if (window.aistudio?.hasSelectedApiKey) {
-        const selected = await window.aistudio.hasSelectedApiKey();
-        setHasSelectedKey(selected);
+        try {
+          const selected = await window.aistudio.hasSelectedApiKey();
+          setHasSelectedKey(selected);
+        } catch (e) {
+          console.error("Key check failed", e);
+        }
       }
     };
     checkKey();
@@ -34,7 +38,7 @@ const App: React.FC = () => {
     if (window.aistudio?.openSelectKey) {
       await window.aistudio.openSelectKey();
       setHasSelectedKey(true);
-      addLog("VERCEL_DEPLOY: API Key configured successfully.", "success");
+      addLog("ENGINE: API Key updated. Turbo Mode active.", "success");
     }
   };
 
@@ -45,13 +49,13 @@ const App: React.FC = () => {
       type,
       timestamp: Date.now()
     };
-    setLogs(prev => [newLog, ...prev].slice(0, 25)); // Keep logs light for Vercel
+    setLogs(prev => [newLog, ...prev].slice(0, 30));
   }, []);
 
   const currentSession = sessions.find(s => s.id === currentSessionId) || null;
 
   const executeSearchTask = async (query: string): Promise<SearchSession> => {
-    addLog(`INIT: ${query.substring(0, 30)}...`, 'process');
+    addLog(`RUNNING: ${query.substring(0, 25)}...`, 'process');
     const { results, stats } = await geminiService.performSearch(query);
     
     const newSession: SearchSession = {
@@ -63,8 +67,9 @@ const App: React.FC = () => {
     };
 
     setSessions(prev => [newSession, ...prev]);
-    addLog(`SUCCESS: ${results.length} nodes for [${query.substring(0, 15)}]`, 'success');
+    addLog(`SUCCESS: ${results.length} links [${query.substring(0, 10)}]`, 'success');
 
+    // Analysis runs in background, non-blocking
     if (results.length > 0) {
       geminiService.analyzeResults(query, results).then(analysis => {
         if (analysis) {
@@ -85,7 +90,8 @@ const App: React.FC = () => {
       setCurrentSessionId(session.id);
     } catch (err: any) {
       const isQuota = err?.message?.includes('429');
-      setError({ message: isQuota ? "API Limit Hit. Please wait." : "Engine Error.", isQuota });
+      setError({ message: isQuota ? "Limit Reached. Please use a custom key." : "Engine failure.", isQuota });
+      addLog(`FATAL: ${query.substring(0, 15)} failed.`, 'error');
     } finally {
       setStatus(AppStatus.IDLE);
     }
@@ -96,24 +102,32 @@ const App: React.FC = () => {
     setError(null);
     setStatus(AppStatus.SEARCHING);
     setBatchProgress({ current: 0, total: queries.length });
-    addLog(`VERCEL_TURBO: Harvesting ${queries.length} dorks...`, 'info');
+    addLog(`TURBO_MODE: Processing ${queries.length} queries with ${CONCURRENCY_LIMIT}x concurrency`, 'info');
     
     let completedCount = 0;
     const pool = [...queries];
     
-    const worker = async () => {
+    const worker = async (workerId: number) => {
+      // Staggered start to avoid immediate burst limit
+      await new Promise(r => setTimeout(r, workerId * 300));
+      
       while (pool.length > 0) {
         const query = pool.shift();
         if (!query) break;
         
         try {
           await executeSearchTask(query);
+          await new Promise(r => setTimeout(r, 400)); // Brief pause between requests in same worker
         } catch (err: any) {
           const isQuota = err?.message?.includes('429');
           if (isQuota) {
-            addLog(`LIMIT: Retrying in 3s...`, 'warning');
-            await new Promise(r => setTimeout(r, 3000));
-            try { await executeSearchTask(query); } catch { addLog(`FAILED: ${query.substring(0, 15)}`, 'error'); }
+            addLog(`RETRYING: ${query.substring(0, 10)}... (Quota Delay)`, 'warning');
+            await new Promise(r => setTimeout(r, 4000));
+            try {
+              await executeSearchTask(query);
+            } catch {
+              addLog(`SKIPPED: ${query.substring(0, 10)} (Limit)`, 'error');
+            }
           } else {
             addLog(`ERROR: Skipping bad query.`, 'error');
           }
@@ -124,11 +138,16 @@ const App: React.FC = () => {
       }
     };
 
-    await Promise.all(Array(Math.min(CONCURRENCY_LIMIT, queries.length)).fill(null).map(worker));
+    // Run parallel workers
+    await Promise.all(
+      Array(Math.min(CONCURRENCY_LIMIT, queries.length))
+        .fill(null)
+        .map((_, i) => worker(i))
+    );
     
     setBatchProgress(null);
     setStatus(AppStatus.IDLE);
-    addLog(`COMPLETED: All tasks processed.`, 'success');
+    addLog(`COMPLETED: All batch tasks finished.`, 'success');
   };
 
   const deleteSession = (id: string) => {
@@ -143,7 +162,7 @@ const App: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `qparser-export-${Date.now()}.${format}`;
+    a.download = `qparser-results-${Date.now()}.${format}`;
     a.click();
   };
 
@@ -158,21 +177,28 @@ const App: React.FC = () => {
             {batchProgress && (
               <div className="mt-6 bg-blue-600/5 p-4 rounded-xl border border-blue-500/10 backdrop-blur-sm">
                 <div className="flex items-center justify-between mb-3 text-[10px] font-black uppercase tracking-widest text-blue-400">
-                  <span>Vercel Deploy Mode: Active</span>
-                  <span>{batchProgress.current}/{batchProgress.total}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
+                    <span>TURBO HARVESTER ACTIVE</span>
+                  </div>
+                  <span>{batchProgress.current} / {batchProgress.total}</span>
                 </div>
-                <div className="h-1 w-full bg-slate-900 rounded-full overflow-hidden">
-                  <div className="h-full bg-blue-600 transition-all duration-300 shadow-[0_0_15px_rgba(37,99,235,0.6)]" style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}></div>
+                <div className="h-1.5 w-full bg-slate-900 rounded-full overflow-hidden">
+                  <div className="h-full bg-blue-600 transition-all duration-500 shadow-[0_0_15px_rgba(37,99,235,0.7)]" style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}></div>
                 </div>
               </div>
             )}
             <div className="mt-8">
               {currentSession ? <ResultsDisplay session={currentSession} status={status} onExport={exportData} /> : (
-                <div className="flex flex-col items-center justify-center h-[60vh] text-center space-y-8">
-                  <div className="relative w-24 h-24 rounded-3xl bg-slate-950 border border-slate-900 flex items-center justify-center shadow-2xl">
-                    <i className="fas fa-cloud-upload-alt text-4xl text-blue-500"></i>
+                <div className="flex flex-col items-center justify-center h-[60vh] text-center space-y-8 animate-in fade-in zoom-in duration-700">
+                  <div className="relative w-28 h-28 rounded-[2rem] bg-slate-950 border border-slate-900 flex items-center justify-center shadow-[0_0_50px_rgba(37,99,235,0.1)]">
+                    <div className="absolute inset-0 bg-blue-600/5 blur-3xl animate-pulse"></div>
+                    <i className="fas fa-bolt text-5xl text-blue-600"></i>
                   </div>
-                  <h2 className="text-3xl font-black text-white tracking-tighter uppercase italic">QPARSER <span className="text-blue-600">VERCEL</span></h2>
+                  <div className="space-y-4">
+                    <h2 className="text-4xl font-black text-white tracking-tighter uppercase italic">QPARSER <span className="text-blue-600">TURBO</span></h2>
+                    <p className="text-slate-600 text-[10px] font-black uppercase tracking-[0.4em]">Optimized for Vercel Deployment</p>
+                  </div>
                 </div>
               )}
             </div>

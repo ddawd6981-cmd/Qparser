@@ -22,20 +22,25 @@ export class GeminiService {
   }
 
   /**
-   * High-Efficiency Retry Logic for Cloud Hosting.
-   * Minimal wait times to maximize throughput on Vercel's fast network.
+   * Ultra-Fast Retry Logic.
+   * Fine-tuned for Vercel's high-speed edge network.
    */
-  private async withRetry<T>(fn: () => Promise<T>, maxRetries = 3, initialDelay = 1000): Promise<T> {
+  private async withRetry<T>(fn: () => Promise<T>, maxRetries = 4, initialDelay = 800): Promise<T> {
     let lastError: any;
     for (let i = 0; i < maxRetries; i++) {
       try {
         return await fn();
       } catch (error: any) {
         lastError = error;
-        const isQuota = error?.message?.includes('429') || error?.message?.includes('RESOURCE_EXHAUSTED');
+        const isQuota = 
+          error?.message?.includes('429') || 
+          error?.message?.includes('RESOURCE_EXHAUSTED') ||
+          error?.status === 'RESOURCE_EXHAUSTED';
 
         if (isQuota && i < maxRetries - 1) {
-          const delay = (initialDelay * Math.pow(1.5, i)) + (Math.random() * 300);
+          // Exponential backoff with jitter
+          const delay = (initialDelay * Math.pow(1.8, i)) + (Math.random() * 400);
+          console.warn(`[Turbo] Limit hit, retrying in ${Math.round(delay)}ms...`);
           await new Promise(resolve => setTimeout(resolve, delay));
           continue;
         }
@@ -49,10 +54,10 @@ export class GeminiService {
     return this.withRetry(async () => {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
       
-      // ULTRA-MINIMAL PROMPT: This triggers the tool faster by reducing token processing time.
+      // MINIMALIST PROMPT = FASTER RESPONSE
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: `Scrape: ${query}`,
+        contents: `Scrape links: ${query}`,
         config: {
           tools: [{ googleSearch: {} }],
         },
@@ -71,7 +76,7 @@ export class GeminiService {
               title: chunk.web.title || 'Source',
               uri: cleanUri,
               domain: domain,
-              snippet: "Verified"
+              snippet: "Verified Link"
             });
             domainCount[domain] = (domainCount[domain] || 0) + 1;
           }
@@ -92,7 +97,7 @@ export class GeminiService {
       const context = results.slice(0, 5).map(r => r.uri).join('\n');
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: `Tech summary: ${context}`,
+        contents: `Summarize tech in: ${context}`,
       });
       return response.text || "";
     } catch {
